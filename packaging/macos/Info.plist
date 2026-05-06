@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                    <string>On-Hands Jarvis</string>
+    <key>CFBundleDisplayName</key>             <string>On-Hands Jarvis</string>
+    <key>CFBundleIdentifier</key>              <string>com.onhands.jarvis</string>
+    <key>CFBundleVersion</key>                 <string>__VERSION__</string>
+    <key>CFBundleShortVersionString</key>      <string>__VERSION__</string>
+    <key>CFBundleExecutable</key>              <string>on-hands-jarvis</string>
+    <key>CFBundlePackageType</key>             <string>APPL</string>
+    <key>CFBundleSignature</key>               <string>????</string>
+    <key>CFBundleInfoDictionaryVersion</key>   <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>          <string>11.0</string>
+    <key>NSHighResolutionCapable</key>         <true/>
+    <key>NSPrincipalClass</key>                <string>NSApplication</string>
+    <key>LSApplicationCategoryType</key>       <string>public.app-category.utilities</string>
+    <key>NSMicrophoneUsageDescription</key>
+        <string>On-Hands Jarvis listens for your wake word.</string>
+    <key>NSAppleEventsUsageDescription</key>
+        <string>On-Hands Jarvis can launch other apps with your permission.</string>
+    <key>NSCameraUsageDescription</key>
+        <string>On-Hands Jarvis can scan QR codes from your screen.</string>
+</dict>
+</plist>

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=On-Hands Jarvis
+Comment=Start Jarvis automatically when you log in
+Exec=on-hands-jarvis
+Icon=on-hands-jarvis
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+StartupNotify=false
+NoDisplay=true
