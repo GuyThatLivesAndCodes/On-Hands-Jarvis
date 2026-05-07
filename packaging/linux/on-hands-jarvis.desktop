@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=On-Hands Jarvis
+GenericName=Voice Assistant
+Comment=Voice-activated desktop AI assistant
+Exec=on-hands-jarvis
+Icon=on-hands-jarvis
+Terminal=false
+Categories=Utility;AudioVideo;Audio;
+StartupNotify=true
+Keywords=jarvis;assistant;voice;ai;grok;

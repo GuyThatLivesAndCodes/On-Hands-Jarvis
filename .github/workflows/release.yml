@@ -1,0 +1,163 @@
+name: Release Installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag/version label for the artifacts"
+        required: false
+        default: "manual"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-deb:
+    name: Linux .deb (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-deb-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libasound2-dev libdbus-1-dev libxdo-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libx11-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libudev-dev
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build .deb
+        run: cargo deb --no-build --target ${{ matrix.target }}
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: on-hands-jarvis-${{ matrix.target }}-deb
+          path: target/${{ matrix.target }}/debian/*.deb
+
+  macos-bundle:
+    name: macOS .app + .dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build universal release binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Bundle .app + .dmg
+        run: bash packaging/macos/bundle.sh
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: on-hands-jarvis-macos
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
+
+  windows-msi:
+    name: Windows .msi
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install WiX Toolset 3
+        shell: pwsh
+        run: |
+          choco install wixtoolset --no-progress -y
+          $wix = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset*' | Select-Object -First 1).FullName
+          "$wix\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      - name: Build .msi
+        shell: pwsh
+        run: cargo wix --nocapture --output target/wix/on-hands-jarvis.msi
+
+      - name: Upload .msi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: on-hands-jarvis-windows-msi
+          path: target/wix/*.msi
+
+  release:
+    name: Publish GitHub Release
+    needs: [linux-deb, macos-bundle, windows-msi]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifact tree
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.deb' -o -name '*.msi' -o -name '*.dmg' -o -name '*.tar.gz' \) -exec cp -v {} release/ \;
+          ls -la release
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

@@ -1,0 +1,80 @@
+[package]
+name = "on-hands-jarvis"
+version = "0.1.0"
+edition = "2021"
+description = "On-Hands Jarvis - a voice-activated desktop AI assistant"
+license = "MIT OR Apache-2.0"
+authors = ["On-Hands Jarvis contributors"]
+homepage = "https://github.com/GuyThatLivesAndCodes/On-Hands-Jarvis"
+repository = "https://github.com/GuyThatLivesAndCodes/On-Hands-Jarvis"
+readme = "README.md"
+
+# ---------- Linux .deb (cargo-deb) ----------
+[package.metadata.deb]
+maintainer = "On-Hands Jarvis contributors"
+copyright = "On-Hands Jarvis contributors"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+On-Hands Jarvis is a voice-activated desktop AI assistant. It listens for a
+user-trained wake word, scans on-screen QR codes, and integrates with the
+xAI Grok API. Installed via this package, it runs automatically at login
+through an XDG autostart entry (toggleable in the GNOME Tweaks /
+KDE Autostart settings)."""
+section = "utils"
+priority = "optional"
+depends = "$auto, libasound2t64 | libasound2, libxdo3, libxkbcommon-x11-0"
+assets = [
+    ["target/release/on-hands-jarvis", "usr/bin/", "755"],
+    ["packaging/linux/on-hands-jarvis.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/autostart/on-hands-jarvis.desktop", "etc/xdg/autostart/", "644"],
+    ["README.md", "usr/share/doc/on-hands-jarvis/README.md", "644"],
+    ["BUILD.md", "usr/share/doc/on-hands-jarvis/BUILD.md", "644"],
+    ["INSTALL.md", "usr/share/doc/on-hands-jarvis/INSTALL.md", "644"],
+]
+maintainer-scripts = "packaging/linux/"
+
+# ---------- Windows .msi (cargo-wix) ----------
+[package.metadata.wix]
+upgrade-guid = "8E2B5C9E-4C6A-4F8D-9C3F-7A1E2B5C9E4D"
+path-guid    = "B7C2D6F1-3A8E-4F2C-9B5D-6E1A4C8F2B7D"
+license      = false
+eula         = false
+
+[dependencies]
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.28"
+egui_extras = { version = "0.28", features = ["all_loaders"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "5"
+anyhow = "1"
+thiserror = "1"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async + HTTP for AI integration
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Audio + DSP for wake-word
+cpal = "0.15"
+rustfft = "6"
+hound = "3"
+
+# Screen capture + QR scanning
+xcap = "0.0.14"
+rqrr = "0.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# System control
+enigo = "0.2"
+sysinfo = "0.31"
+open = "5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

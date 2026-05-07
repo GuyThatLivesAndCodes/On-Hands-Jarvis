@@ -1,0 +1,140 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Windows Installer (MSI) authoring for On-Hands Jarvis. Built by
+  `cargo wix` — version, manufacturer, etc. are templated via
+  cargo-wix from Cargo.toml metadata.
+
+  Two autostart paths are configured:
+    1. A shortcut placed in the per-user Startup folder.
+    2. A registry value under HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+       (acts as a backup if the user moves the shortcut).
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product Id='*'
+           Name='On-Hands Jarvis'
+           UpgradeCode='8E2B5C9E-4C6A-4F8D-9C3F-7A1E2B5C9E4D'
+           Manufacturer='On-Hands Jarvis contributors'
+           Language='1033'
+           Codepage='1252'
+           Version='$(var.Version)'>
+
+    <Package Id='*'
+             Keywords='Installer'
+             Description='On-Hands Jarvis Installer'
+             Manufacturer='On-Hands Jarvis contributors'
+             InstallerVersion='450'
+             Languages='1033'
+             Compressed='yes'
+             InstallScope='perMachine'
+             SummaryCodepage='1252' />
+
+    <MajorUpgrade Schedule='afterInstallInitialize'
+                  DowngradeErrorMessage='A newer version of On-Hands Jarvis is already installed. Setup will now exit.'/>
+
+    <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+    <Property Id='DiskPrompt' Value='On-Hands Jarvis Installation'/>
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder' Name='PFiles'>
+        <Directory Id='APPLICATIONFOLDER' Name='On-Hands Jarvis'>
+          <Component Id='Path' Guid='B7C2D6F1-3A8E-4F2C-9B5D-6E1A4C8F2B7D' KeyPath='yes'>
+            <Environment Id='PATH'
+                         Name='PATH'
+                         Value='[APPLICATIONFOLDER]'
+                         Permanent='no'
+                         Part='last'
+                         Action='set'
+                         System='yes'/>
+          </Component>
+          <Component Id='binary0' Guid='*'>
+            <File Id='exe0'
+                  Name='on-hands-jarvis.exe'
+                  DiskId='1'
+                  Source='target\$(var.Profile)\on-hands-jarvis.exe'
+                  KeyPath='yes'/>
+          </Component>
+        </Directory>
+      </Directory>
+
+      <!-- Per-user Startup-folder shortcut for autostart at login. -->
+      <Directory Id='StartupFolder' Name='Startup'>
+        <Component Id='StartupShortcut' Guid='C1A4F6B2-9D7E-4F1B-8A3D-5C2E6F9B4A1D'>
+          <Shortcut Id='StartupAppShortcut'
+                    Name='On-Hands Jarvis'
+                    Description='Start On-Hands Jarvis at login'
+                    Target='[APPLICATIONFOLDER]on-hands-jarvis.exe'
+                    WorkingDirectory='APPLICATIONFOLDER'/>
+          <RegistryValue Root='HKCU'
+                         Key='Software\OnHandsJarvis'
+                         Name='startup_installed'
+                         Type='integer'
+                         Value='1'
+                         KeyPath='yes'/>
+          <RemoveFolder Id='StartupFolder' On='uninstall'/>
+        </Component>
+      </Directory>
+
+      <!-- Backup autostart via HKCU Run registry key. -->
+      <Component Id='AutostartRegistry' Guid='D2B5E7C3-8A4F-4D6E-9B1C-3F7A2E8C5D4B'>
+        <RegistryValue Root='HKCU'
+                       Key='Software\Microsoft\Windows\CurrentVersion\Run'
+                       Name='OnHandsJarvis'
+                       Type='string'
+                       Value='&quot;[APPLICATIONFOLDER]on-hands-jarvis.exe&quot;'
+                       KeyPath='yes'/>
+      </Component>
+
+      <Directory Id='ProgramMenuFolder' Name='ProgramsMenu'>
+        <Directory Id='ApplicationProgramsFolder' Name='On-Hands Jarvis'>
+          <Component Id='ApplicationShortcut' Guid='E3C8F1D4-5A2B-4C7E-8F9D-1B6A4E2C7F5D'>
+            <Shortcut Id='ApplicationStartMenuShortcut'
+                      Name='On-Hands Jarvis'
+                      Description='Voice-activated desktop AI assistant'
+                      Target='[APPLICATIONFOLDER]on-hands-jarvis.exe'
+                      WorkingDirectory='APPLICATIONFOLDER'/>
+            <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall'/>
+            <RegistryValue Root='HKCU'
+                           Key='Software\OnHandsJarvis'
+                           Name='installed'
+                           Type='integer'
+                           Value='1'
+                           KeyPath='yes'/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='Binaries'
+             Title='Application'
+             Description='Installs the application binary.'
+             Level='1'
+             ConfigurableDirectory='APPLICATIONFOLDER'
+             AllowAdvertise='no'
+             Display='expand'
+             Absent='disallow'>
+      <ComponentRef Id='binary0'/>
+      <ComponentRef Id='ApplicationShortcut'/>
+      <Feature Id='AddOnPath'
+               Title='PATH'
+               Description='Add the install location to the PATH.'
+               Level='1'
+               Absent='allow'>
+        <ComponentRef Id='Path'/>
+      </Feature>
+      <Feature Id='Autostart'
+               Title='Start at login'
+               Description='Run On-Hands Jarvis automatically when you log in.'
+               Level='1'
+               Absent='allow'>
+        <ComponentRef Id='StartupShortcut'/>
+        <ComponentRef Id='AutostartRegistry'/>
+      </Feature>
+    </Feature>
+
+    <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+    <Property Id='ARPHELPLINK' Value='https://github.com/GuyThatLivesAndCodes/On-Hands-Jarvis'/>
+    <UI>
+      <UIRef Id='WixUI_FeatureTree'/>
+    </UI>
+  </Product>
+</Wix>
