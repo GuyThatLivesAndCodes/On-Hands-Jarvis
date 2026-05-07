@@ -27,8 +27,8 @@ Beyond basic command execution, Jarvis will offer proactive support, including:
 
 The application's user interface (UI) will adhere to a minimalist and functional aesthetic:
 
-*   **Color Scheme:** A stark black-to-white gradient will form the primary color palette, ensuring clarity and reducing visual clutter.
-*   **Accent Color:** A subtle yet distinct light blue will be used as the primary accent color for interactive elements and highlights, providing visual cues without overwhelming the clean design.
+*   **Color Scheme:** The UI will primarily utilize a sophisticated grayscale palette, ranging from black to white, ensuring a clean and easy-to-read interface. When a primary accent color is required, a vibrant light blue will be employed to highlight interactive elements and provide visual cues.
+*   **Overall Aesthetic:** The design will prioritize a modern, interactive, and "alive" feel, akin to a highly polished and engaging application. This includes intuitive layouts, smooth transitions, and responsive elements that contribute to a dynamic user experience.
 
 ### Autonomous System Control and Interaction
 
