@@ -22,4 +22,13 @@ impl Tab {
             Tab::Settings => "Settings",
         }
     }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Chat => "Chat",
+            Tab::Qr => "QR Codes",
+            Tab::System => "System",
+            Tab::Settings => "Settings",
+        }
+    }
 }

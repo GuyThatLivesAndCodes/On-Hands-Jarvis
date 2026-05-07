@@ -3,5 +3,7 @@
 // provider by changing the base URL.
 
 pub mod grok;
+pub mod tools;
 
 pub use grok::{ChatMessage, ChatRequest, Client, Role};
+pub use tools::{available_tools, catalog_summary, execute as execute_tool, AgentContext};
