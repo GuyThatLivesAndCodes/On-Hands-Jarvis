@@ -1,7 +1,6 @@
-// Persistent configuration: API keys, wake-word templates, autonomy
-// safeguards. Stored as JSON under the platform's standard config directory.
-//
-// `Config` is the on-disk schema; mutate, then call `save` to persist.
+// Persistent configuration: API keys, wake-word templates, audio device
+// preferences, autonomy safeguards. Stored as JSON under the platform's
+// standard config directory.
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -11,30 +10,47 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub setup_complete: bool,
-    /// Optional Grok / xAI API key. Stored in plaintext in the user config
-    /// dir; treat with normal config-file hygiene.
+    /// xAI / Grok API key. Stored in plaintext under the user config dir.
     pub xai_api_key: Option<String>,
-    /// Model to call against the xAI Chat API.
     pub xai_model: String,
-    /// User's chosen wake word (free-form text label only).
+
     pub wake_word_label: String,
-    /// Wake-word feature templates (one per recorded sample).
+    /// Positive (wake-word) feature templates.
     pub wake_templates: Vec<WakeTemplate>,
-    /// Detection sensitivity: lower = more permissive, higher = stricter.
+    /// Negative templates: speech / sounds that should NOT trigger the
+    /// wake word. Used to suppress false positives.
+    #[serde(default)]
+    pub wake_negative_templates: Vec<WakeTemplate>,
+    /// Detection threshold for the positive score in `[0, 1]`.
     pub wake_threshold: f32,
-    /// Autonomy safeguards.
+    /// Cooldown after a successful detection during which further
+    /// triggers are suppressed.
+    #[serde(default = "default_cooldown")]
+    pub wake_cooldown_secs: u32,
+
     pub autonomy: Autonomy,
-    /// QR code passive scanning of the screen.
+
     pub qr_scanning_enabled: bool,
+    /// Whether to overlay rectangles around detected QR codes directly
+    /// on the user's screen with Open / Copy buttons.
+    #[serde(default = "default_true")]
+    pub qr_overlay_enabled: bool,
+
+    /// Preferred input device name (cpal). `None` means "system default".
+    #[serde(default)]
+    pub mic_device: Option<String>,
+    /// Preferred output device name. Reserved for future TTS use.
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
+
+fn default_cooldown() -> u32 { 10 }
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WakeTemplate {
-    /// Flat MFCC-like log-spectrogram features.
     pub features: Vec<f32>,
-    /// Number of frames (rows) in the original 2D feature matrix.
     pub frames: usize,
-    /// Number of bins per frame (columns).
     pub bins: usize,
 }
 
@@ -44,6 +60,12 @@ pub struct Autonomy {
     pub allow_input_control: bool,
     pub allow_file_writes: bool,
     pub allow_web_browsing: bool,
+    /// Run arbitrary shell commands. High-blast-radius — off by default.
+    #[serde(default)]
+    pub allow_shell_commands: bool,
+    /// Capture screenshots of the user's monitors.
+    #[serde(default = "default_true")]
+    pub allow_screen_capture: bool,
 }
 
 impl Default for Autonomy {
@@ -53,6 +75,8 @@ impl Default for Autonomy {
             allow_input_control: false,
             allow_file_writes: false,
             allow_web_browsing: false,
+            allow_shell_commands: false,
+            allow_screen_capture: true,
         }
     }
 }
@@ -65,20 +89,33 @@ impl Default for Config {
             xai_model: "grok-2-latest".to_string(),
             wake_word_label: "Jarvis".to_string(),
             wake_templates: Vec::new(),
+            wake_negative_templates: Vec::new(),
             wake_threshold: 0.65,
+            wake_cooldown_secs: 10,
             autonomy: Autonomy::default(),
             qr_scanning_enabled: true,
+            qr_overlay_enabled: true,
+            mic_device: None,
+            output_device: None,
         }
     }
 }
 
 impl Config {
-    pub fn path() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("com", "OnHands", "Jarvis")
-            .context("could not resolve a config directory for this platform")?;
+    pub fn project_dirs() -> Result<ProjectDirs> {
+        ProjectDirs::from("com", "OnHands", "Jarvis")
+            .context("could not resolve a config directory for this platform")
+    }
+
+    pub fn config_dir() -> Result<PathBuf> {
+        let dirs = Self::project_dirs()?;
         let dir = dirs.config_dir().to_path_buf();
         std::fs::create_dir_all(&dir).ok();
-        Ok(dir.join("config.json"))
+        Ok(dir)
+    }
+
+    pub fn path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("config.json"))
     }
 
     pub fn load() -> Result<Self> {
@@ -99,8 +136,6 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;
         let bytes = serde_json::to_vec_pretty(self)?;
-        // Write to a tempfile then rename, so a crash doesn't truncate the
-        // user's config.
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, &path).with_context(|| format!("rename {}", path.display()))?;

@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream, StreamConfig};
+use cpal::{Device, SampleFormat, Stream, StreamConfig};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use super::features::{downmix_to_mono, resample_to_target, SAMPLE_RATE};
 
 pub struct Recorder {
     inner: Arc<Mutex<RingBuffer>>,
+    device_name: String,
     _stream: Stream,
 }
 
@@ -31,10 +32,6 @@ impl RingBuffer {
         }
     }
 
-    fn snapshot(&self) -> Vec<f32> {
-        self.samples.iter().copied().collect()
-    }
-
     fn last_secs(&self, secs: f32) -> Vec<f32> {
         let n = ((secs * SAMPLE_RATE as f32) as usize).min(self.samples.len());
         self.samples
@@ -46,11 +43,20 @@ impl RingBuffer {
 }
 
 impl Recorder {
-    pub fn start(buffer_seconds: f32) -> Result<Self> {
+    /// Start the recorder. If `preferred_device_name` is provided we look
+    /// it up among the host's input devices; otherwise we fall back to
+    /// the system default.
+    pub fn start(buffer_seconds: f32, preferred_device_name: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("no default input device available"))?;
+        let device = match preferred_device_name {
+            Some(name) => find_input_device(&host, name)
+                .or_else(|| host.default_input_device())
+                .ok_or_else(|| anyhow!("input device '{name}' not found and no default available"))?,
+            None => host
+                .default_input_device()
+                .ok_or_else(|| anyhow!("no default input device available"))?,
+        };
+        let resolved_name = device.name().unwrap_or_else(|_| "(unknown)".into());
 
         let supported = device
             .default_input_config()
@@ -110,19 +116,15 @@ impl Recorder {
 
         stream.play().context("start audio input stream")?;
         log::info!(
-            "audio capture started: src_rate={} ch={} fmt={:?} -> {}Hz mono",
-            src_rate,
-            channels,
-            sample_fmt,
-            SAMPLE_RATE
+            "audio capture started: device='{}' src_rate={} ch={} fmt={:?} -> {}Hz mono",
+            resolved_name, src_rate, channels, sample_fmt, SAMPLE_RATE
         );
 
-        Ok(Self { inner, _stream: stream })
+        Ok(Self { inner, device_name: resolved_name, _stream: stream })
     }
 
-    /// Snapshot of the entire ring buffer (mono 16 kHz f32).
-    pub fn snapshot(&self) -> Vec<f32> {
-        self.inner.lock().snapshot()
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 
     /// Last `secs` seconds of audio (mono 16 kHz f32).
@@ -135,7 +137,6 @@ impl Recorder {
     pub fn record_for(&self, secs: f32) -> Vec<f32> {
         let target = (secs * SAMPLE_RATE as f32) as usize;
         let start = std::time::Instant::now();
-        // Wait for the buffer to fill at least `target` fresh samples.
         let baseline = self.inner.lock().samples.len();
         loop {
             let now = self.inner.lock().samples.len();
@@ -149,4 +150,28 @@ impl Recorder {
         }
         self.last_seconds(secs)
     }
+}
+
+fn find_input_device(host: &cpal::Host, name: &str) -> Option<Device> {
+    host.input_devices().ok().and_then(|mut iter| {
+        iter.find(|d| d.name().map(|n| n == name).unwrap_or(false))
+    })
+}
+
+/// Names of all available input devices on the default host.
+pub fn list_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .ok()
+        .map(|it| it.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Names of all available output devices on the default host.
+pub fn list_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .ok()
+        .map(|it| it.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
 }

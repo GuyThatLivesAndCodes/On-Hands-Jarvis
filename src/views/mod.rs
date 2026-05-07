@@ -1,9 +1,11 @@
 // View modules for the post-setup main window.
 
 pub mod chat;
+pub mod qr_overlay;
 pub mod qr_view;
 pub mod settings;
 pub mod system_view;
+pub mod wake_overlay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {

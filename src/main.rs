@@ -13,6 +13,7 @@
 mod ai;
 mod app;
 mod automation;
+mod chat_store;
 mod config;
 mod qr;
 mod theme;

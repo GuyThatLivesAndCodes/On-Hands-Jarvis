@@ -1,23 +1,35 @@
-// Top-level eframe application. Dispatches between the setup wizard and
-// the main shell, which is a left side-rail of pill tabs alongside a
-// card-based content area.
+// Top-level eframe application. Owns config, runtime, audio capture,
+// QR scanner, chat state, and dispatches between the setup wizard and
+// the main shell. Also opens a transparent QR-overlay viewport whenever
+// codes are visible on screen, and a floating "wake chat" viewport
+// when the wake word fires.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::ai::{AgentContext, ChatMessage};
+use crate::ai::tools::AgentContext;
+use crate::ai::ChatMessage;
 use crate::automation::system::{SystemMonitor, SystemSnapshot};
-use crate::config::Config;
+use crate::config::{Config, WakeTemplate};
 use crate::qr::Scanner;
 use crate::theme;
 use crate::views::chat::ChatState;
+use crate::views::settings::AudioDevices;
+use crate::views::wake_overlay::WakeOverlay;
 use crate::views::{self, Tab};
-use crate::voice::{Recorder, WakeDetector};
+use crate::voice::{extract_features, list_input_devices, list_output_devices, Recorder, WakeDetector};
 use crate::wizard::{self, Wizard, WizardOutcome};
 
 const WAKE_WINDOW_SECS: f32 = 1.4;
 const WAKE_CHECK_INTERVAL: Duration = Duration::from_millis(400);
 const SYSTEM_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const NEGATIVE_SAMPLE_SECS: f32 = 1.6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegativeRecording {
+    Idle,
+    Capturing { started_at: Instant },
+}
 
 pub struct JarvisApp {
     pub config: Config,
@@ -37,6 +49,11 @@ pub struct JarvisApp {
     pub tab: Tab,
     pub wizard: Wizard,
     pub chat: ChatState,
+    pub wake_overlay: WakeOverlay,
+
+    pub audio_devices: AudioDevices,
+    negative_recording: NegativeRecording,
+    pub status_flash: Option<(Instant, String)>,
 }
 
 impl JarvisApp {
@@ -49,20 +66,21 @@ impl JarvisApp {
             Config::default()
         });
 
-        let (recorder, mic_error) = match Recorder::start(WAKE_WINDOW_SECS.max(2.0)) {
-            Ok(r) => (Some(r), None),
-            Err(e) => {
-                log::warn!("microphone unavailable: {e:#}");
-                (None, Some(e.to_string()))
-            }
-        };
-
+        let (recorder, mic_error) = start_recorder(&config);
         let mut system_monitor = SystemMonitor::new();
         let system_snapshot = system_monitor.snapshot();
 
         let wizard = Wizard {
             mic_unavailable: mic_error.clone(),
             ..Default::default()
+        };
+
+        let mut chat = ChatState::default();
+        chat.refresh_chat_list();
+
+        let audio_devices = AudioDevices {
+            input: list_input_devices(),
+            output: list_output_devices(),
         };
 
         Self {
@@ -79,7 +97,11 @@ impl JarvisApp {
             last_wake_event: None,
             tab: Tab::Chat,
             wizard,
-            chat: ChatState::default(),
+            chat,
+            wake_overlay: WakeOverlay::default(),
+            audio_devices,
+            negative_recording: NegativeRecording::Idle,
+            status_flash: None,
         }
     }
 
@@ -95,9 +117,43 @@ impl JarvisApp {
             }
         }
 
+        // Negative-sample capture finalize.
+        if let NegativeRecording::Capturing { started_at } = self.negative_recording {
+            if started_at.elapsed().as_secs_f32() >= NEGATIVE_SAMPLE_SECS {
+                if let Some(rec) = &self.recorder {
+                    let samples = rec.last_seconds(NEGATIVE_SAMPLE_SECS);
+                    let feats = extract_features(&samples);
+                    if !feats.is_empty() {
+                        self.config.wake_negative_templates.push(WakeTemplate {
+                            features: feats.data,
+                            frames: feats.frames,
+                            bins: feats.bins,
+                        });
+                        let _ = self.config.save();
+                        self.flash(format!(
+                            "Captured negative sample ({} total).",
+                            self.config.wake_negative_templates.len()
+                        ));
+                    }
+                }
+                self.negative_recording = NegativeRecording::Idle;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(80));
+            }
+        }
+
+        // Wake-word detection (only when not in cooldown).
+        let in_cooldown = self
+            .last_wake_event
+            .map(|t| t.elapsed() < Duration::from_secs(self.config.wake_cooldown_secs as u64))
+            .unwrap_or(false);
+
         if let (Some(rec), true) = (
             &self.recorder,
-            self.config.setup_complete && !self.config.wake_templates.is_empty(),
+            self.config.setup_complete
+                && !self.config.wake_templates.is_empty()
+                && !in_cooldown
+                && matches!(self.negative_recording, NegativeRecording::Idle),
         ) {
             if self.last_wake_check.elapsed() >= WAKE_CHECK_INTERVAL {
                 self.last_wake_check = Instant::now();
@@ -105,28 +161,72 @@ impl JarvisApp {
                 if samples.len() as f32 >= WAKE_WINDOW_SECS * 16_000.0 * 0.5 {
                     let detector = WakeDetector::new(
                         &self.config.wake_templates,
+                        &self.config.wake_negative_templates,
                         self.config.wake_threshold,
                     );
-                    let (score, hit) = detector.score(&samples);
-                    self.last_wake_score = score;
-                    if hit.is_some()
-                        && self
-                            .last_wake_event
-                            .map(|t| t.elapsed() > Duration::from_secs(2))
-                            .unwrap_or(true)
-                    {
+                    let decision = detector.score(&samples);
+                    self.last_wake_score = decision.positive_score;
+                    if decision.hit {
                         self.last_wake_event = Some(Instant::now());
-                        log::info!("wake word matched (score={score:.2})");
-                        self.tab = Tab::Chat;
+                        log::info!(
+                            "wake matched (pos={:.2} neg={:.2})",
+                            decision.positive_score, decision.negative_score
+                        );
+                        self.wake_overlay.trigger();
                     }
                 }
             }
         }
 
         self.chat.drain_pending();
+        self.chat.drain_ui_commands(ctx);
 
-        ctx.request_repaint_after(Duration::from_millis(100));
+        ctx.request_repaint_after(Duration::from_millis(120));
     }
+
+    fn agent_context(&self, ctx: &egui::Context) -> AgentContext {
+        let clipboard = read_clipboard_text(ctx);
+        AgentContext {
+            system: self.system_snapshot.clone(),
+            qr_codes: self.scanner.codes.clone(),
+            autonomy: self.config.autonomy.clone(),
+            wake_word: self.config.wake_word_label.clone(),
+            clipboard,
+            ui_tx: self.chat.ui_tx.clone(),
+        }
+    }
+
+    fn flash(&mut self, msg: impl Into<String>) {
+        self.status_flash = Some((Instant::now(), msg.into()));
+    }
+
+    fn refresh_audio_devices(&mut self) {
+        self.audio_devices.input = list_input_devices();
+        self.audio_devices.output = list_output_devices();
+    }
+
+    fn restart_audio(&mut self) {
+        let (rec, err) = start_recorder(&self.config);
+        self.recorder = rec;
+        self.mic_error = err;
+    }
+}
+
+fn start_recorder(config: &Config) -> (Option<Recorder>, Option<String>) {
+    match Recorder::start(WAKE_WINDOW_SECS.max(2.0), config.mic_device.as_deref()) {
+        Ok(r) => (Some(r), None),
+        Err(e) => {
+            log::warn!("microphone unavailable: {e:#}");
+            (None, Some(e.to_string()))
+        }
+    }
+}
+
+fn read_clipboard_text(_ctx: &egui::Context) -> Option<String> {
+    // egui doesn't expose synchronous clipboard read; the agent loop
+    // ignores `None` and returns an empty string for `read_clipboard`.
+    // (We could plug an `arboard` instance here later if needed.)
+    None
 }
 
 impl eframe::App for JarvisApp {
@@ -142,6 +242,26 @@ impl eframe::App for JarvisApp {
                     self.show_main(ui);
                 }
             });
+
+        // Wake overlay (ephemeral floating chat).
+        let agent = self.agent_context(ctx);
+        let api_key = self.config.xai_api_key.clone();
+        let model = self.config.xai_model.clone();
+        let wake_word = self.config.wake_word_label.clone();
+        views::wake_overlay::show(
+            ctx,
+            &mut self.wake_overlay,
+            &self.runtime,
+            api_key.as_deref(),
+            &model,
+            agent,
+            &wake_word,
+        );
+
+        // QR overlay.
+        if self.config.setup_complete {
+            views::qr_overlay::show(ctx, &self.scanner.codes, self.config.qr_overlay_enabled);
+        }
     }
 }
 
@@ -155,6 +275,7 @@ impl JarvisApp {
                 "You are Jarvis, the user's on-device assistant. They activated you with the wake word \"{}\". Be concise.",
                 self.config.wake_word_label
             ))];
+            self.chat.refresh_chat_list();
         }
     }
 
@@ -162,14 +283,9 @@ impl JarvisApp {
         let avail = ui.available_rect_before_wrap();
         let nav_w = 220.0_f32;
 
-        // Left side rail.
-        let nav_rect = egui::Rect::from_min_size(
-            avail.min,
-            egui::vec2(nav_w, avail.height()),
-        );
+        let nav_rect = egui::Rect::from_min_size(avail.min, egui::vec2(nav_w, avail.height()));
         ui.allocate_ui_at_rect(nav_rect, |ui| self.draw_sidebar(ui));
 
-        // Right content area.
         let content_rect = egui::Rect::from_min_max(
             egui::pos2(avail.min.x + nav_w, avail.min.y),
             avail.max,
@@ -187,13 +303,12 @@ impl JarvisApp {
     fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(22.0);
 
-        // Brand: a small rounded accent square + wordmark, no special glyphs.
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
             ui.painter().rect(
                 rect,
-                theme::rounding(8.0),
+                theme::rounding(theme::R_FIELD),
                 theme::ACCENT,
                 egui::Stroke::new(1.0, theme::ACCENT_HOV),
             );
@@ -222,9 +337,8 @@ impl JarvisApp {
 
         ui.add_space(26.0);
 
-        // Tab pills, padded from the rail edge.
         ui.scope(|ui| {
-            ui.style_mut().spacing.item_spacing.y = 6.0;
+            ui.style_mut().spacing.item_spacing.y = 4.0;
             for (tab, label) in [
                 (Tab::Chat,     "Chat"),
                 (Tab::Qr,       "QR Codes"),
@@ -240,7 +354,6 @@ impl JarvisApp {
             }
         });
 
-        // Bottom-anchored status block.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(20.0);
             egui::Frame::none()
@@ -249,52 +362,68 @@ impl JarvisApp {
                     theme::subcard(ui, |ui| {
                         ui.horizontal(|ui| {
                             let live = self.recorder.is_some();
-                            let text = if live {
-                                format!("Listening · {:.0}%", self.last_wake_score * 100.0)
-                            } else {
+                            let in_cool = self
+                                .last_wake_event
+                                .map(|t| t.elapsed() < Duration::from_secs(self.config.wake_cooldown_secs as u64))
+                                .unwrap_or(false);
+                            let text = if !live {
                                 "Mic offline".to_string()
+                            } else if in_cool {
+                                let remaining = self
+                                    .config
+                                    .wake_cooldown_secs as u64
+                                    - self
+                                        .last_wake_event
+                                        .map(|t| t.elapsed().as_secs())
+                                        .unwrap_or(0);
+                                format!("Cooldown · {remaining}s")
+                            } else {
+                                format!("Listening · {:.0}%", self.last_wake_score * 100.0)
                             };
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                            // Soft halo + solid core. The halo radius
-                            // pulses slowly when the mic is live.
+                            let core_color = if !live {
+                                theme::TEXT_DIM
+                            } else if in_cool {
+                                theme::TEXT_MUTED
+                            } else {
+                                theme::ACCENT
+                            };
                             let painter = ui.painter();
-                            let core_color = if live { theme::ACCENT } else { theme::TEXT_DIM };
-                            if live {
+                            if live && !in_cool {
                                 let t = ui.ctx().input(|i| i.time) as f32;
-                                let phase = (t * 1.6).sin() * 0.5 + 0.5; // 0..1
-                                let halo_r = 4.0 + phase * 4.0;
+                                let phase = (t * 1.6).sin() * 0.5 + 0.5;
                                 let halo_a = (40.0 + phase * 80.0) as u8;
                                 painter.circle_filled(
                                     rect.center(),
-                                    halo_r,
+                                    4.0 + phase * 4.0,
                                     egui::Color32::from_rgba_unmultiplied(
-                                        theme::ACCENT.r(),
-                                        theme::ACCENT.g(),
-                                        theme::ACCENT.b(),
-                                        halo_a,
+                                        theme::ACCENT.r(), theme::ACCENT.g(), theme::ACCENT.b(), halo_a,
                                     ),
                                 );
-                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+                                ui.ctx().request_repaint_after(Duration::from_millis(60));
                             }
                             painter.circle_filled(rect.center(), 3.5, core_color);
                             ui.label(egui::RichText::new(text).color(theme::TEXT).small());
                         });
                         ui.add_space(2.0);
                         ui.label(
-                            egui::RichText::new(format!(
-                                "Wake word: \"{}\"",
-                                self.config.wake_word_label
-                            ))
-                            .color(theme::TEXT_MUTED)
-                            .small(),
+                            egui::RichText::new(format!("Wake word: \"{}\"", self.config.wake_word_label))
+                                .color(theme::TEXT_MUTED)
+                                .small(),
                         );
+                        if let Some(dev) = &self.config.mic_device {
+                            ui.label(
+                                egui::RichText::new(format!("Mic: {}", truncate(dev, 22)))
+                                    .color(theme::TEXT_DIM)
+                                    .small(),
+                            );
+                        }
                     });
                 });
         });
     }
 
     fn draw_content(&mut self, ui: &mut egui::Ui) {
-        // Top app bar with title + status badges.
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(self.tab.title())
@@ -305,11 +434,7 @@ impl JarvisApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(20.0);
                 if !self.scanner.codes.is_empty() {
-                    theme::badge(
-                        ui,
-                        &format!("{} QR codes", self.scanner.codes.len()),
-                        false,
-                    );
+                    theme::badge(ui, &format!("{} QR codes", self.scanner.codes.len()), false);
                 }
                 theme::badge(
                     ui,
@@ -328,21 +453,27 @@ impl JarvisApp {
             });
         });
 
+        // Transient status flash from settings actions.
+        if let Some((t, msg)) = self.status_flash.clone() {
+            if t.elapsed() < Duration::from_secs(3) {
+                ui.add_space(4.0);
+                theme::subcard(ui, |ui| {
+                    ui.label(egui::RichText::new(msg).color(theme::ACCENT));
+                });
+            } else {
+                self.status_flash = None;
+            }
+        }
+
         ui.add_space(6.0);
 
-        // The card holding the active tab's content fills the remaining space.
         let content_rect = ui.available_rect_before_wrap().shrink2(egui::vec2(20.0, 0.0));
         ui.allocate_ui_at_rect(content_rect, |ui| {
             theme::card(ui, |ui| {
                 ui.set_min_height(ui.available_height() - 20.0);
                 match self.tab {
                     Tab::Chat => {
-                        let agent = AgentContext {
-                            system: self.system_snapshot.clone(),
-                            qr_codes: self.scanner.codes.clone(),
-                            autonomy: self.config.autonomy.clone(),
-                            wake_word: self.config.wake_word_label.clone(),
-                        };
+                        let agent = self.agent_context(ui.ctx());
                         views::chat::show(
                             ui,
                             &mut self.chat,
@@ -359,10 +490,29 @@ impl JarvisApp {
                         views::system_view::show(ui, &self.system_snapshot);
                     }
                     Tab::Settings => {
-                        let result = views::settings::show(ui, &mut self.config);
+                        let result = views::settings::show(
+                            ui, &mut self.config, &self.audio_devices,
+                        );
+                        if result.refresh_audio_devices {
+                            self.refresh_audio_devices();
+                            self.flash("Refreshed audio device list.");
+                        }
+                        if result.mic_changed {
+                            self.restart_audio();
+                            self.flash(format!(
+                                "Switched mic to {}",
+                                self.config.mic_device.clone().unwrap_or_else(|| "system default".into())
+                            ));
+                        }
                         if result.clear_wake_templates {
                             self.config.wake_templates.clear();
                             let _ = self.config.save();
+                            self.flash("Cleared positive wake samples.");
+                        }
+                        if result.clear_negative_templates {
+                            self.config.wake_negative_templates.clear();
+                            let _ = self.config.save();
+                            self.flash("Cleared negative wake samples.");
                         }
                         if result.retrain_wake_word {
                             self.wizard = Wizard {
@@ -374,9 +524,28 @@ impl JarvisApp {
                             self.config.setup_complete = false;
                             let _ = self.config.save();
                         }
+                        if result.record_negative_sample {
+                            if self.recorder.is_some() {
+                                self.negative_recording = NegativeRecording::Capturing {
+                                    started_at: Instant::now(),
+                                };
+                                self.flash("Capturing 1.6s of background sound — keep it noisy.");
+                            } else {
+                                self.flash("Mic unavailable — can't capture a sample.");
+                            }
+                        }
                     }
                 }
             });
         });
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{cut}…")
     }
 }

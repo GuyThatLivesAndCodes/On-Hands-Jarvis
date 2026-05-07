@@ -1,8 +1,9 @@
 // System-information snapshots: CPU, memory, top processes. Cheap to
 // refresh on a timer in the UI thread.
 
+use anyhow::{anyhow, Result};
 use serde::Serialize;
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemSnapshot {
@@ -75,4 +76,49 @@ impl SystemMonitor {
             top_processes: procs,
         }
     }
+}
+
+/// Terminate one or more processes. Either `name_substring` (matches the
+/// process *name* case-insensitively) or `pid` must be provided. Sends
+/// SIGTERM via sysinfo. Returns the pids actually killed.
+pub fn close_app(name_substring: Option<&str>, pid: Option<u32>) -> Result<Vec<u32>> {
+    if name_substring.is_none() && pid.is_none() {
+        return Err(anyhow!("close_app needs either `target` or `pid`"));
+    }
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All);
+
+    let mut killed = Vec::new();
+
+    if let Some(p) = pid {
+        if let Some(proc_) = sys.process(Pid::from_u32(p)) {
+            if proc_.kill_with(Signal::Term).unwrap_or(false) {
+                killed.push(p);
+            }
+        } else {
+            return Err(anyhow!("no process with pid {p}"));
+        }
+    }
+
+    if let Some(needle) = name_substring {
+        let needle = needle.to_lowercase();
+        for (pid, proc_) in sys.processes() {
+            let name = proc_.name().to_string_lossy().to_lowercase();
+            if !name.contains(&needle) {
+                continue;
+            }
+            // Don't suicide on ourselves.
+            if name.contains("on-hands-jarvis") {
+                continue;
+            }
+            if proc_.kill_with(Signal::Term).unwrap_or(false) {
+                killed.push(pid.as_u32());
+            }
+        }
+    }
+
+    if killed.is_empty() {
+        return Err(anyhow!("no matching processes were terminated"));
+    }
+    Ok(killed)
 }

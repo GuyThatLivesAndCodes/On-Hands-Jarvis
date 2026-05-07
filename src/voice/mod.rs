@@ -13,5 +13,5 @@ pub mod recorder;
 pub mod wake;
 
 pub use features::extract_features;
-pub use recorder::Recorder;
+pub use recorder::{list_input_devices, list_output_devices, Recorder};
 pub use wake::WakeDetector;
